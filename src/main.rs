@@ -35,7 +35,17 @@ struct Player {
     lasers: Vec<Laser>
 }
 
+#[derive(PartialEq)]
+enum AsteroidSize {
+    Tiny,
+    Small,
+    Medium,
+    Large,
+    Huge
+}
+
 struct Asteroid {
+    size: AsteroidSize,
     radius: f32,
     points: Vec<Vector2>,
     velocity: Vector2,
@@ -89,7 +99,6 @@ fn main() {
         });
     }
 
-    generate_asteroids(&mut state, 10);
     main_loop(&mut state);
 }
 
@@ -110,11 +119,11 @@ fn generate_explosion(state : &mut State) {
     }
 }
 
-fn generate_asteroids(state : &mut State, n : i32) {
+fn generate_asteroid(size : Option<AsteroidSize>, pos : Option<Vector2>) -> Asteroid {
     let mut rng = rand::thread_rng();
 
-    for _ in 0..n {
-        // TODO: fix this crap
+    // TODO: fix this crap
+    let position : Vector2 = pos.unwrap_or_else(|| {
         let mut x: f32;
         let mut y: f32;
         loop {
@@ -122,32 +131,48 @@ fn generate_asteroids(state : &mut State, n : i32) {
             y = (rng.gen::<f32>() * 1.5 * WINDOW_D.1) - WINDOW_D.1;
 
             if x > WINDOW_D.0/2.0 || x < -WINDOW_D.0/2.0 || y < -WINDOW_D.1/2.0 || y > WINDOW_D.1/2.0 {
-                break;
+                break Vector2::new(x, y);
             }
         }
+    });
 
-        let speed = MAX_SPEED * rng_min(&mut rng, 0.25);
-        let radius = MAX_RADIUS * rng_min(&mut rng, 0.25);
-        let velocity = (Vector2::new(rng.gen::<f32>() * WINDOW_D.0, rng.gen::<f32>() * WINDOW_D.1) - Vector2::new(x,y)).normalized() * speed;
+    let size : AsteroidSize = size.unwrap_or_else(|| match rng.gen_range(1..5) {
+        1 => AsteroidSize::Tiny,
+        2 => AsteroidSize::Small,
+        3 => AsteroidSize::Medium,
+        4 => AsteroidSize::Large,
+        5 => AsteroidSize::Huge,
+        _ => AsteroidSize::Medium
+    });
 
-        let n_points = rng.gen_range(8..14);
-        let mut points: Vec<Vector2> = Vec::new();
-        // generate shape
-        for i in 0..n_points {
-            let magnitude = rng_min(&mut rng, 0.5);
-            let theta = (PI * 2.0 / n_points as f32) * i as f32;
-            let dir: Vector2 = Vector2::new(theta.cos(), theta.sin());
+    let speed = MAX_SPEED * rng_min(&mut rng, 0.25);
+    let radius = match size {
+        AsteroidSize::Tiny => 12.0,
+        AsteroidSize::Small => 20.0,
+        AsteroidSize::Medium => 35.0,
+        AsteroidSize::Large => 40.0,
+        AsteroidSize::Huge => 50.0
+    };
+    let velocity = (Vector2::new(rng.gen::<f32>() * WINDOW_D.0, rng.gen::<f32>() * WINDOW_D.1) - position).normalized() * speed;
 
-            points.push(dir * (radius * magnitude));
-        }
-        points.push(points[0]);
+    let n_points = rng.gen_range(8..14);
+    let mut points: Vec<Vector2> = Vec::new();
+    // generate shape
+    for i in 0..n_points {
+        let magnitude = rng_min(&mut rng, 0.5);
+        let theta = (PI * 2.0 / n_points as f32) * i as f32;
+        let dir: Vector2 = Vector2::new(theta.cos(), theta.sin());
 
-        state.asteroids.push(Asteroid {
-            radius: radius,
-            points: points,
-            velocity: velocity,
-            pos: Vector2::new(x, y)
-        });
+        points.push(dir * (radius * magnitude));
+    }
+    points.push(points[0]);
+
+    Asteroid {
+        size: size,
+        radius: radius,
+        points: points,
+        velocity: velocity,
+        pos: position
     }
 }
 
@@ -158,12 +183,15 @@ fn main_loop(state : &mut State) {
         state.delta = cur_time - prev_time;
 
         if state.asteroids.len() < 10 {
-            generate_asteroids(state, 6);
+            for _ in 0..10-state.asteroids.len() {
+                state.asteroids.push(generate_asteroid(None, None));
+            }
         }
 
         if state.player.exploding && state.player.explosion_delta < 1e-6 {
             generate_explosion(state);
         }
+
         update_player(state);
         update_asteroids(state);
 
@@ -184,16 +212,38 @@ fn in_bounds(point : Vector2) -> bool {
 
 fn update_asteroids(state : &mut State) {
     // big ones break up into smaller ones
+
     let mut stale: Vec<usize> = Vec::new();
+    let mut animate: Vec<usize> = Vec::new();
+    let mut new: Vec<Asteroid> = Vec::new();
+
     let mut idx = 0;
     for asteroid in &mut state.asteroids {
         asteroid.pos += asteroid.velocity * (state.delta as f32);
 
-        // let center_vector : Vector2 = -Vector2::new(asteroid.pos.x-WINDOW_D.0/2.0, WINDOW_D.1/2.0 - asteroid.pos.y);
-        let center_vector = -asteroid.pos;
-        if (!in_bounds(asteroid.pos)) && asteroid.velocity.dot(center_vector) < 0.0 {
-            println!("Removing asteroid at index: {}", idx);
+        if (!in_bounds(asteroid.pos)) && asteroid.velocity.dot(-asteroid.pos) < 0.0 {
             stale.push(idx);
+            continue;
+        }
+
+        for laser in &state.player.lasers {
+            if asteroid.pos.distance_to(laser.pos) > asteroid.radius {
+                continue;
+            }
+            if asteroid.size == AsteroidSize::Tiny {
+                animate.push(idx);
+            } else {
+                stale.push(idx);
+                for _ in 0..2 {
+                    new.push(generate_asteroid(Some(match asteroid.size {
+                        _ => AsteroidSize::Tiny,
+                        AsteroidSize::Small => AsteroidSize::Tiny,
+                        AsteroidSize::Medium => AsteroidSize::Small,
+                        AsteroidSize::Large => AsteroidSize::Medium,
+                        AsteroidSize::Huge => AsteroidSize::Large,
+                    }), Some(asteroid.pos)));
+                }
+            }
         }
         
         idx += 1;
@@ -203,6 +253,9 @@ fn update_asteroids(state : &mut State) {
     for i in stale {
         state.asteroids.remove(i-x);
         x+=1;
+    }
+    for a in new {
+        state.asteroids.push(a);
     }
 }
 
@@ -215,7 +268,6 @@ fn render_screen(state : &mut State) {
     if state.player.exploding {
         for segment in &state.player.segments {
             let theta = segment.dir;
-            // let displacement = state.player.pos + (Vector2::new(theta.cos(), theta.sin()) * segment.speed);
             let displacement = state.player.pos;
 
             let mut p1 = segment.p1.clone();
@@ -258,7 +310,7 @@ fn update_player(state : &mut State) {
     state.player.laser_cooldown -= state.delta as f32;
 
     for laser in &mut state.player.lasers {
-        laser.pos += laser.dir * 200.0 * state.delta as f32;
+        laser.pos += laser.dir * 250.0 * state.delta as f32;
     }
 
     if state.player.explosion_delta > 2.0 {
@@ -301,7 +353,7 @@ fn update_player(state : &mut State) {
             dir: direction,
             pos: state.player.pos
         });
-        state.player.laser_cooldown = 0.15;
+        state.player.laser_cooldown = 0.2;
     }
 
     state.player.velocity.scale(1.0 - DRAG);
@@ -321,11 +373,7 @@ fn update_player(state : &mut State) {
     }
 
     for asteroid in &state.asteroids {
-        let hit_x : bool = state.player.pos.x <= asteroid.pos.x + asteroid.radius
-            && state.player.pos.x >= asteroid.pos.x - asteroid.radius;
-        let hit_y : bool = state.player.pos.y <= asteroid.pos.y + asteroid.radius
-            && state.player.pos.y >= asteroid.pos.y - asteroid.radius;
-        if hit_x && hit_y {
+        if state.player.pos.distance_to(asteroid.pos) < asteroid.radius {
             state.player.exploding = true;
             state.player.explosion_delta = 0.0;
         }
