@@ -1,8 +1,8 @@
 use raylib::prelude::*;
-use std::cmp;
 
 const PI: f32 = 3.14159265359;
-const WINDOW_D: (i32, i32) = (640, 580);
+const WINDOW_D: (i32, i32) = (800, 580);
+const DRAG: f32 = 1.5 * 1e-4;
 
 const MONITORED_KEYS: [KeyboardKey; 31] = [
     KeyboardKey::KEY_A,
@@ -42,9 +42,8 @@ struct Player {
     lives: i32,
     angle_r: f32, // radians
     ammo: i32,
-    velocity: f64,
-    accel: f64,
-    displacement: Vector2
+    velocity: Vector2,
+    pos: Vector2
 }
 
 struct State {
@@ -66,11 +65,10 @@ fn main() {
         thread: thread,
         player: Player {
             lives: 3,
-            angle_r: 0.0,
+            angle_r: PI,
             ammo: 5,
-            velocity: 0.0,
-            accel: 0.0,
-            displacement: Vector2::zero()
+            velocity: Vector2::zero(),
+            pos: Vector2::zero()
         },
         delta: 0.0,
         keys: [false; 31]
@@ -96,9 +94,6 @@ fn main_loop(state : &mut State) {
         d.clear_background(Color::BLACK);
         d.draw_line_strip(&ship_lines, Color::WHITE);
 
-        println!("Angle: {}", state.player.angle_r);
-        println!("Accel: {}", state.player.accel);
-        println!("Vel: {}", state.player.velocity);
         prev_time = cur_time;
     }
 }
@@ -112,8 +107,13 @@ fn update_inputs(state : &mut State) {
 }
 
 fn update_player(state : &mut State) {
+    const SPEED: f64 = 0.25;
     // rotate at constant velocity?
     // unless moving
+
+    let theta: f32 = state.player.angle_r - (PI * 3.0/2.0);
+    let mut direction : Vector2 = Vector2::new(theta.cos(), theta.sin()); 
+
     if state.keys[26] { // right
         state.player.angle_r += 0.0012;
     }
@@ -121,28 +121,27 @@ fn update_player(state : &mut State) {
         state.player.angle_r -= 0.0012;
     }
     if state.keys[28] {
-        if state.player.accel < 0.01 {
-            state.player.accel += 0.001;
-        }
-    } else if state.player.accel > 0.0 {
-        state.player.accel = (state.player.accel - 0.001).max(0.0);
+        state.player.velocity += direction * (SPEED * state.delta) as f32;
+    }
+    state.player.velocity.scale(1.0 - DRAG);
+
+    state.player.pos += state.player.velocity;
+
+    if state.player.pos.x >= (WINDOW_D.0 / 2) as f32 {
+        state.player.pos.x -= WINDOW_D.0 as f32;
+    } else if state.player.pos.x <= - (WINDOW_D.0 / 2) as f32 {
+        state.player.pos.x += WINDOW_D.0 as f32;
     }
 
-    state.player.velocity += state.player.accel * state.delta;
-
-    // how to find vector from angle?
-    // x = cos theta * hyp
-    // y = sin theta * hyp
-    // hyp = 1 cause unit vector
-    let theta: f32 = state.player.angle_r - (PI * 3.0/2.0);
-    let mut displacement_delta : Vector2 = Vector2::new(theta.cos(), theta.sin()); 
-    displacement_delta.scale(state.player.velocity as f32);
-
-    state.player.displacement += displacement_delta;
-    // find displacement vector
-    // (1) find unit direction vector
-    // (2) move along it by velocity
-    // (3) add to current displacement vector
+    if state.player.pos.y >= (WINDOW_D.1 / 2) as f32 {
+        state.player.pos.y -= WINDOW_D.1 as f32;
+    } else if state.player.pos.y <= - (WINDOW_D.1 / 2) as f32 {
+        state.player.pos.y += WINDOW_D.1 as f32;
+    }
+    // wrap displacement
+    //
+    //
+    // find what x or y value the player exited on and just move them
 }
 
 fn serialize_player(state : &State) -> [Vector2; 4]{
@@ -154,8 +153,8 @@ fn serialize_player(state : &State) -> [Vector2; 4]{
     for i in &mut ship_lines {
         i.rotate(state.player.angle_r);
         i.scale(25.0);
-        *i += Vector2::new(640.0/2.0, 480.0/2.0);
-        *i += state.player.displacement;
+        *i += Vector2::new((WINDOW_D.0/2) as f32, (WINDOW_D.1/2) as f32);
+        *i += state.player.pos;
     }
 
     ship_lines
