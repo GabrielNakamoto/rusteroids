@@ -115,6 +115,8 @@ fn generate_asteroids(state : &mut State, n : i32) {
     }
 }
 
+// make everything use (0, 0) as center coordinates
+// convert to draw coordinates in render function (left top corner origin)
 fn main_loop(state : &mut State) {
 
     let mut prev_time: f64 = 0.0;
@@ -124,7 +126,7 @@ fn main_loop(state : &mut State) {
 
         // remove asteroids once off screen
         // then regenerate once less then...
-        if state.asteroids.len() < 6 {
+        if state.asteroids.len() < 10 {
             generate_asteroids(state, 6);
         }
 
@@ -138,8 +140,12 @@ fn main_loop(state : &mut State) {
     }
 }
 
+fn to_draw_vector(point : Vector2) -> Vector2 {
+    Vector2::new(point.x+WINDOW_D.0/2.0, -point.y+WINDOW_D.1/2.0)
+}
+
 fn in_bounds(point : Vector2) -> bool {
-    point.x >= 0.0 && point.x <= WINDOW_D.0 && point.y >= 0.0 && point.y <= WINDOW_D.1
+    point.x >= -WINDOW_D.0/2.0 && point.x <= WINDOW_D.0/2.0 && point.y >= -WINDOW_D.1/2.0 && point.y <= WINDOW_D.1/2.0
 }
 
 fn update_asteroids(state : &mut State) {
@@ -148,7 +154,8 @@ fn update_asteroids(state : &mut State) {
     for asteroid in &mut state.asteroids {
         asteroid.pos += asteroid.velocity * (state.delta as f32);
 
-        let center_vector : Vector2 = -Vector2::new(asteroid.pos.x-WINDOW_D.0/2.0, WINDOW_D.1/2.0 - asteroid.pos.y);
+        // let center_vector : Vector2 = -Vector2::new(asteroid.pos.x-WINDOW_D.0/2.0, WINDOW_D.1/2.0 - asteroid.pos.y);
+        let center_vector = -asteroid.pos;
         if (!in_bounds(asteroid.pos)) && asteroid.velocity.dot(center_vector) < 0.0 {
             println!("Removing asteroid at index: {}", idx);
             stale.push(idx);
@@ -175,7 +182,7 @@ fn render_screen(state : &mut State) {
     for asteroid in &state.asteroids {
         let mut global_points : Vec<Vector2> = Vec::new();
         for point in &asteroid.points {
-            global_points.push(*point + asteroid.pos);
+            global_points.push(to_draw_vector(*point + asteroid.pos));
         }
         d.draw_line_strip(&global_points, Color::WHITE);
     }
@@ -190,10 +197,10 @@ fn update_player(state : &mut State) {
     let direction : Vector2 = Vector2::new(theta.cos(), theta.sin()); 
 
     if state.rl_handle.is_key_down(KeyboardKey::KEY_RIGHT) { // right
-        state.player.angle_r += 0.0012;
+        state.player.angle_r -= 0.0012;
     }
     if state.rl_handle.is_key_down(KeyboardKey::KEY_LEFT) {
-        state.player.angle_r -= 0.0012;
+        state.player.angle_r += 0.0012;
     }
     if state.rl_handle.is_key_down(KeyboardKey::KEY_UP) {
         state.player.velocity += direction * (SPEED * state.delta) as f32;
@@ -224,8 +231,9 @@ fn serialize_player(state : &State) -> [Vector2; 4]{
     for i in &mut ship_lines {
         i.rotate(state.player.angle_r);
         i.scale(25.0);
-        *i += Vector2::new(WINDOW_D.0/2.0, WINDOW_D.1/2.0);
+        // *i += Vector2::new(WINDOW_D.0/2.0, WINDOW_D.1/2.0);
         *i += state.player.pos;
+        *i = to_draw_vector(*i);
     }
 
     ship_lines
