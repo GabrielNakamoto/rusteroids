@@ -2,42 +2,9 @@ use raylib::prelude::*;
 use rand::Rng;
 
 const PI: f32 = 3.14159265359;
-const WINDOW_D: (i32, i32) = (800, 580);
+const WINDOW_D: (f32, f32) = (800.0, 580.0);
 const DRAG: f32 = 1.5 * 1e-4;
-
-const MONITORED_KEYS: [KeyboardKey; 31] = [
-    KeyboardKey::KEY_A,
-    KeyboardKey::KEY_B,
-    KeyboardKey::KEY_C,
-    KeyboardKey::KEY_D,
-    KeyboardKey::KEY_E,
-    KeyboardKey::KEY_F,
-    KeyboardKey::KEY_G,
-    KeyboardKey::KEY_H,
-    KeyboardKey::KEY_I,
-    KeyboardKey::KEY_J,
-    KeyboardKey::KEY_K,
-    KeyboardKey::KEY_L,
-    KeyboardKey::KEY_M,
-    KeyboardKey::KEY_N,
-    KeyboardKey::KEY_O,
-    KeyboardKey::KEY_P,
-    KeyboardKey::KEY_Q,
-    KeyboardKey::KEY_R,
-    KeyboardKey::KEY_S,
-    KeyboardKey::KEY_T,
-    KeyboardKey::KEY_U,
-    KeyboardKey::KEY_V,
-    KeyboardKey::KEY_W,
-    KeyboardKey::KEY_X,
-    KeyboardKey::KEY_Y,
-    KeyboardKey::KEY_Z,
-    KeyboardKey::KEY_RIGHT,
-    KeyboardKey::KEY_LEFT,
-    KeyboardKey::KEY_UP,
-    KeyboardKey::KEY_DOWN,
-    KeyboardKey::KEY_SPACE,
-];
+const MAX_RADIUS: f32 = 50.0;
 
 struct Player {
     lives: i32,
@@ -65,7 +32,7 @@ struct State {
 
 fn main() {
     let (rl, thread) = raylib::init()
-        .size(WINDOW_D.0, WINDOW_D.1)
+        .size(WINDOW_D.0 as i32, WINDOW_D.1 as i32)
         .title("Rusteroids")
         .build();
 
@@ -84,7 +51,7 @@ fn main() {
         keys: [false; 31]
     };
 
-    generate_asteroids(&mut state, 1);
+    generate_asteroids(&mut state, 10);
     main_loop(&mut state);
 }
 
@@ -92,19 +59,48 @@ fn generate_asteroids(state : &mut State, n : i32) {
     let mut rng = rand::thread_rng();
 
     for _ in 0..n {
-        let mut asteroid = Asteroid {
-            radius: 35.0,
-            points: Vec::new(),
-            velocity: Vector2::zero(),
-            pos: Vector2::new((WINDOW_D.0 / 2) as f32, (WINDOW_D.1 / 2) as f32)
+        let radius = MAX_RADIUS * loop {
+            let x = rng.gen::<f32>();
+            if x >= 0.25 {
+                break x;
+            }
         };
-        let n_points = rng.gen_range(6..14);
 
-        println!("Points: {}", n_points);
+        let mut x: f32;
+        let mut y: f32;
+        loop {
+            // how do I let it be negative
+            x = (rng.gen::<f32>() * 1.5 * WINDOW_D.0) - WINDOW_D.0;
+            y = (rng.gen::<f32>() * 1.5 * WINDOW_D.1) - WINDOW_D.1;
+
+            if x < 0.0 || x > WINDOW_D.0 || y < 0.0 || y > WINDOW_D.1 {
+                break;
+            }
+        }
+
+        const max_speed: f32 = 200.0;
+        let speed = max_speed * loop {
+            let x = rng.gen::<f32>();
+            if x >= 0.25 {
+                break x;
+            }
+        };
+
+        let velocity = (Vector2::new(rng.gen::<f32>() * WINDOW_D.0, rng.gen::<f32>() * WINDOW_D.1) - Vector2::new(x,y)).normalized() * speed;
+
+        let mut asteroid = Asteroid {
+            radius: radius,
+            points: Vec::new(),
+            velocity: velocity,
+            pos: Vector2::new(x, y),
+        };
+
+        let n_points = rng.gen_range(8..14);
+
         for i in 0..n_points {
             let magnitude = loop {
                 let x = rng.gen::<f32>();
-                if x >= 0.25 {
+                if x >= 0.5 {
                     break x;
                 }
             };
@@ -126,20 +122,45 @@ fn main_loop(state : &mut State) {
         let cur_time = state.rl_handle.get_time();
         state.delta = cur_time - prev_time;
 
-        update_inputs(state);
+        // remove asteroids once off screen
+        // then regenerate once less then...
+        if state.asteroids.len() < 6 {
+            generate_asteroids(state, 6);
+        }
+
         update_player(state);
+        update_asteroids(state);
 
         render_screen(state);
+
 
         prev_time = cur_time;
     }
 }
 
-fn update_inputs(state : &mut State) {
+fn in_bounds(point : Vector2) -> bool {
+    point.x >= 0.0 && point.x <= WINDOW_D.0 && point.y >= 0.0 && point.y <= WINDOW_D.1
+}
+
+fn update_asteroids(state : &mut State) {
+    let mut stale: Vec<usize> = Vec::new();
     let mut idx = 0;
-    for key in MONITORED_KEYS {
-        state.keys[idx] = state.rl_handle.is_key_down(key);
+    for asteroid in &mut state.asteroids {
+        asteroid.pos += asteroid.velocity * (state.delta as f32);
+
+        let center_vector : Vector2 = -Vector2::new(asteroid.pos.x-WINDOW_D.0/2.0, WINDOW_D.1/2.0 - asteroid.pos.y);
+        if (!in_bounds(asteroid.pos)) && asteroid.velocity.dot(center_vector) < 0.0 {
+            println!("Removing asteroid at index: {}", idx);
+            stale.push(idx);
+        }
+        
         idx += 1;
+    }
+
+    let mut x = 0;
+    for i in stale {
+        state.asteroids.remove(i-x);
+        x+=1;
     }
 }
 
@@ -166,31 +187,31 @@ fn update_player(state : &mut State) {
     // unless moving
 
     let theta: f32 = state.player.angle_r - (PI * 3.0/2.0);
-    let mut direction : Vector2 = Vector2::new(theta.cos(), theta.sin()); 
+    let direction : Vector2 = Vector2::new(theta.cos(), theta.sin()); 
 
-    if state.keys[26] { // right
+    if state.rl_handle.is_key_down(KeyboardKey::KEY_RIGHT) { // right
         state.player.angle_r += 0.0012;
     }
-    if state.keys[27] { // left
+    if state.rl_handle.is_key_down(KeyboardKey::KEY_LEFT) {
         state.player.angle_r -= 0.0012;
     }
-    if state.keys[28] {
+    if state.rl_handle.is_key_down(KeyboardKey::KEY_UP) {
         state.player.velocity += direction * (SPEED * state.delta) as f32;
     }
     state.player.velocity.scale(1.0 - DRAG);
 
     state.player.pos += state.player.velocity;
 
-    if state.player.pos.x >= (WINDOW_D.0 / 2) as f32 {
-        state.player.pos.x -= WINDOW_D.0 as f32;
-    } else if state.player.pos.x <= - (WINDOW_D.0 / 2) as f32 {
-        state.player.pos.x += WINDOW_D.0 as f32;
+    if state.player.pos.x >= WINDOW_D.0 / 2.0 {
+        state.player.pos.x -= WINDOW_D.0;
+    } else if state.player.pos.x <= -WINDOW_D.0 / 2.0 {
+        state.player.pos.x += WINDOW_D.0;
     }
 
-    if state.player.pos.y >= (WINDOW_D.1 / 2) as f32 {
-        state.player.pos.y -= WINDOW_D.1 as f32;
-    } else if state.player.pos.y <= - (WINDOW_D.1 / 2) as f32 {
-        state.player.pos.y += WINDOW_D.1 as f32;
+    if state.player.pos.y >= WINDOW_D.1 / 2.0 {
+        state.player.pos.y -= WINDOW_D.1;
+    } else if state.player.pos.y <= -WINDOW_D.1 / 2.0 {
+        state.player.pos.y += WINDOW_D.1;
     }
 }
 
@@ -203,7 +224,7 @@ fn serialize_player(state : &State) -> [Vector2; 4]{
     for i in &mut ship_lines {
         i.rotate(state.player.angle_r);
         i.scale(25.0);
-        *i += Vector2::new((WINDOW_D.0/2) as f32, (WINDOW_D.1/2) as f32);
+        *i += Vector2::new(WINDOW_D.0/2.0, WINDOW_D.1/2.0);
         *i += state.player.pos;
     }
 
