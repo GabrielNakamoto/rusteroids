@@ -44,12 +44,19 @@ enum AsteroidSize {
     Huge
 }
 
+struct Particle {
+    pos: Vector2,
+    dir: Vector2,
+}
+
 struct Asteroid {
     size: AsteroidSize,
     radius: f32,
     points: Vec<Vector2>,
     velocity: Vector2,
-    pos: Vector2
+    pos: Vector2,
+    particles: Vec<Particle>,
+    destroyed: bool
 }
 
 struct State {
@@ -108,6 +115,18 @@ fn rng_min(rng : &mut ThreadRng, min : f32) -> f32 {
         x = rng.gen::<f32>();
     }
     x
+}
+
+fn generate_particles(asteroid : &mut Asteroid) {
+    let mut rng = rand::thread_rng();
+    for i in 1..10 {
+        let theta = rng.gen::<f32>() * PI * 2.0;
+        let dir = Vector2::new(theta.cos(), theta.sin()).normalized();
+        asteroid.particles.push(Particle {
+            pos: asteroid.pos,
+            dir: dir
+        });
+    }
 }
 
 fn generate_explosion(state : &mut State) {
@@ -172,7 +191,9 @@ fn generate_asteroid(size : Option<AsteroidSize>, pos : Option<Vector2>) -> Aste
         radius: radius,
         points: points,
         velocity: velocity,
-        pos: position
+        pos: position,
+        particles: Vec::new(),
+        destroyed: false
     }
 }
 
@@ -197,7 +218,6 @@ fn main_loop(state : &mut State) {
 
         render_screen(state);
 
-
         prev_time = cur_time;
     }
 }
@@ -219,6 +239,17 @@ fn update_asteroids(state : &mut State) {
 
     let mut idx = 0;
     for asteroid in &mut state.asteroids {
+        if asteroid.destroyed {
+            for particle in &mut asteroid.particles {
+                particle.pos += particle.dir * 25.0 * state.delta as f32;
+
+                if particle.pos.distance_to(asteroid.pos) > 20.0 {
+                    stale.push(idx);
+                    break;
+                }
+            }
+            continue;
+        }
         asteroid.pos += asteroid.velocity * (state.delta as f32);
 
         if (!in_bounds(asteroid.pos)) && asteroid.velocity.dot(-asteroid.pos) < 0.0 {
@@ -231,16 +262,18 @@ fn update_asteroids(state : &mut State) {
                 continue;
             }
             if asteroid.size == AsteroidSize::Tiny {
-                animate.push(idx);
+                asteroid.destroyed = true;
+                generate_particles(asteroid);
             } else {
                 stale.push(idx);
-                for _ in 0..2 {
+                let mut rng = rand::thread_rng();
+                for _ in 0..rng.gen_range(2..3) {
                     new.push(generate_asteroid(Some(match asteroid.size {
-                        _ => AsteroidSize::Tiny,
                         AsteroidSize::Small => AsteroidSize::Tiny,
                         AsteroidSize::Medium => AsteroidSize::Small,
                         AsteroidSize::Large => AsteroidSize::Medium,
                         AsteroidSize::Huge => AsteroidSize::Large,
+                        _ => AsteroidSize::Tiny,
                     }), Some(asteroid.pos)));
                 }
             }
@@ -298,6 +331,12 @@ fn render_screen(state : &mut State) {
     d.draw_line_strip(&ship_lines, Color::WHITE);
 
     for asteroid in &state.asteroids {
+        if asteroid.destroyed {
+            for particle in &asteroid.particles {
+                d.draw_circle_v(to_draw_vector(particle.pos), 1.5, Color::WHITE);
+            }
+            continue;
+        }
         let mut global_points : Vec<Vector2> = Vec::new();
         for point in &asteroid.points {
             global_points.push(to_draw_vector(*point + asteroid.pos));
@@ -309,8 +348,18 @@ fn render_screen(state : &mut State) {
 fn update_player(state : &mut State) {
     state.player.laser_cooldown -= state.delta as f32;
 
+    let mut stale : Vec<usize> = Vec::new();
+    let mut x : usize = 0;
     for laser in &mut state.player.lasers {
         laser.pos += laser.dir * 250.0 * state.delta as f32;
+
+        if ! in_bounds(laser.pos) {
+            stale.push(x);
+        }
+        x += 1;
+    }
+    for i in stale {
+        state.player.lasers.remove(i);
     }
 
     if state.player.explosion_delta > 2.0 {
@@ -348,7 +397,9 @@ fn update_player(state : &mut State) {
         state.player.velocity += direction * (SPEED * state.delta) as f32;
     }
 
-    if state.rl_handle.is_key_down(KeyboardKey::KEY_SPACE) && state.player.laser_cooldown < 1e-6 {
+    if state.rl_handle.is_key_down(KeyboardKey::KEY_SPACE)
+        && state.player.laser_cooldown < 1e-6
+        && state.player.lasers.len() < 5 {
         state.player.lasers.push(Laser {
             dir: direction,
             pos: state.player.pos
