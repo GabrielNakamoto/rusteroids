@@ -1,4 +1,5 @@
 use raylib::prelude::*;
+use rand::Rng;
 
 const PI: f32 = 3.14159265359;
 const WINDOW_D: (i32, i32) = (800, 580);
@@ -46,11 +47,19 @@ struct Player {
     pos: Vector2
 }
 
+struct Asteroid {
+    radius: f32,
+    points: Vec<Vector2>,
+    velocity: Vector2,
+    pos: Vector2
+}
+
 struct State {
     rl_handle: RaylibHandle,
     thread: RaylibThread,
     player: Player,
     delta: f64,
+    asteroids: Vec<Asteroid>,
     keys: [bool; 31] // alphabet + arrows + space
 }
 
@@ -71,10 +80,43 @@ fn main() {
             pos: Vector2::zero()
         },
         delta: 0.0,
+        asteroids: Vec::new(),
         keys: [false; 31]
     };
 
+    generate_asteroids(&mut state, 1);
     main_loop(&mut state);
+}
+
+fn generate_asteroids(state : &mut State, n : i32) {
+    let mut rng = rand::thread_rng();
+
+    for _ in 0..n {
+        let mut asteroid = Asteroid {
+            radius: 35.0,
+            points: Vec::new(),
+            velocity: Vector2::zero(),
+            pos: Vector2::new((WINDOW_D.0 / 2) as f32, (WINDOW_D.1 / 2) as f32)
+        };
+        let n_points = rng.gen_range(6..14);
+
+        println!("Points: {}", n_points);
+        for i in 0..n_points {
+            let magnitude = loop {
+                let x = rng.gen::<f32>();
+                if x >= 0.25 {
+                    break x;
+                }
+            };
+            let theta = (PI * 2.0 / n_points as f32) * i as f32;
+            let dir: Vector2 = Vector2::new(theta.cos(), theta.sin());
+
+            asteroid.points.push(dir * (asteroid.radius * magnitude));
+        }
+        asteroid.points.push(asteroid.points[0]);
+
+        state.asteroids.push(asteroid);
+    }
 }
 
 fn main_loop(state : &mut State) {
@@ -83,16 +125,11 @@ fn main_loop(state : &mut State) {
     while !state.rl_handle.window_should_close() {
         let cur_time = state.rl_handle.get_time();
         state.delta = cur_time - prev_time;
-        // state.player.angle_r += state.delta as f32;
 
         update_inputs(state);
         update_player(state);
 
-        let ship_lines = serialize_player(state);
-
-        let mut d = state.rl_handle.begin_drawing(&state.thread);
-        d.clear_background(Color::BLACK);
-        d.draw_line_strip(&ship_lines, Color::WHITE);
+        render_screen(state);
 
         prev_time = cur_time;
     }
@@ -103,6 +140,23 @@ fn update_inputs(state : &mut State) {
     for key in MONITORED_KEYS {
         state.keys[idx] = state.rl_handle.is_key_down(key);
         idx += 1;
+    }
+}
+
+fn render_screen(state : &mut State) {
+    let ship_lines = serialize_player(state);
+
+    let mut d = state.rl_handle.begin_drawing(&state.thread);
+
+    d.clear_background(Color::BLACK);
+    d.draw_line_strip(&ship_lines, Color::WHITE);
+
+    for asteroid in &state.asteroids {
+        let mut global_points : Vec<Vector2> = Vec::new();
+        for point in &asteroid.points {
+            global_points.push(*point + asteroid.pos);
+        }
+        d.draw_line_strip(&global_points, Color::WHITE);
     }
 }
 
@@ -138,10 +192,6 @@ fn update_player(state : &mut State) {
     } else if state.player.pos.y <= - (WINDOW_D.1 / 2) as f32 {
         state.player.pos.y += WINDOW_D.1 as f32;
     }
-    // wrap displacement
-    //
-    //
-    // find what x or y value the player exited on and just move them
 }
 
 fn serialize_player(state : &State) -> [Vector2; 4]{
