@@ -4,15 +4,15 @@ use rand::{
     Rng,
 };
 
-const SCALE: f32 = 2.5;
+const SCALE: f32 = 1.65;
 
 const PI: f32 = 3.14159265359;
 const WINDOW_D: (f32, f32) = (800.0 * SCALE, 580.0 * SCALE);
 const DRAG: f32 = 1.5 * 1e-4;
 const MAX_SPEED: f32 = 200.0;
 const THICKNESS: f32 = 1.25 * SCALE;
-const SPEED: f32 = 0.25 * SCALE * SCALE;
-const ROT_SPEED: f32 = 0.0020 * (1.0 + SCALE/2.0);
+const SPEED: f32 = 0.25 * SCALE;
+const ROT_SPEED: f32 = 0.0018;
 const SHIP_SCALE: f32 = 25.0 * SCALE;
 
 const MAX_PARTICLE_DIST: f32 = 25.0 * SCALE;
@@ -141,6 +141,17 @@ struct State {
     delta: f32,
     asteroids: Vec<Asteroid>,
     score: i32,
+}
+
+// force the stale vector move
+fn clean_vec<T>(v : &mut Vec<T>, mut stale : Vec<usize>) {
+    // sort in descending order, index shifting doesn't matter
+    stale.sort_by(|a, b| b.cmp(a));
+    for i in stale {
+        // swap_remove is O(1), doesn't affect future removals because
+        // it swaps with the back
+        v.swap_remove(i);
+    }
 }
 
 fn to_draw_vector(point : Vector2) -> Vector2 {
@@ -280,10 +291,8 @@ fn update_asteroids(state : &mut State) {
         }
     }
 
-    stale.sort_by(|a, b| b.cmp(a));
-    for &i in &stale {
-        state.asteroids.remove(i);
-    }
+    clean_vec(&mut state.asteroids, stale);
+
     for a in new {
         state.asteroids.push(a);
     }
@@ -340,10 +349,7 @@ impl Player {
             }
         }
 
-        stale.sort_by(|a, b| b.cmp(a));
-        for i in stale {
-            self.lasers.remove(i);
-        }
+        clean_vec(&mut self.lasers, stale);
     }
 
     fn update_explosion(&mut self, global_delta : f32) {
@@ -410,17 +416,12 @@ impl Player {
         self.velocity.scale(1.0 - DRAG);
         self.pos += self.velocity;
 
-
-        if self.pos.x >= WINDOW_D.0 / 2.0 {
-            self.pos.x -= WINDOW_D.0;
-        } else if self.pos.x <= -WINDOW_D.0 / 2.0 {
-            self.pos.x += WINDOW_D.0;
+        if self.pos.x.abs() - (self.pos.x %(WINDOW_D.0/2.0)).abs() > 1e-6 {
+            self.pos.x -= self.pos.x.signum() * WINDOW_D.0;
         }
 
-        if self.pos.y >= WINDOW_D.1 / 2.0 {
-            self.pos.y -= WINDOW_D.1;
-        } else if self.pos.y <= -WINDOW_D.1 / 2.0 {
-            self.pos.y += WINDOW_D.1;
+        if self.pos.y.abs() - (self.pos.y % (WINDOW_D.1/2.0)).abs() > 1e-6 {
+            self.pos.y -= self.pos.y.signum() * WINDOW_D.1;
         }
 
         for asteroid in asteroids {
@@ -438,37 +439,41 @@ impl Player {
 
 impl Asteroid {
     fn generate(size : Option<AsteroidSize>, pos : Option<Vector2>) -> Self {
-
         // TODO: fix this crap
-        let pos : Vector2 = pos.unwrap_or_else(|| {
-            let mut x: f32;
-            let mut y: f32;
-            loop {
-                x = (rand::random::<f32>() * 1.5 * WINDOW_D.0) - WINDOW_D.0;
-                y = (rand::random::<f32>() * 1.5 * WINDOW_D.1) - WINDOW_D.1;
+        let pos : Vector2 = match pos {
+            None => {
+                loop {
+                    let x = (rand::random::<f32>() * 2.0 * WINDOW_D.0) - WINDOW_D.0;
+                    let y = (rand::random::<f32>() * 2.0 * WINDOW_D.1) - WINDOW_D.1;
 
-                if x > WINDOW_D.0/2.0 || x < -WINDOW_D.0/2.0 || y < -WINDOW_D.1/2.0 || y > WINDOW_D.1/2.0 {
-                    break Vector2::new(x, y);
+                    if ! in_bounds(Vector2::new(x, y)) {
+                        break Vector2::new(x, y);
+                    }
                 }
-            }
-        });
+            },
+            Some(vec) => vec
+        };
 
-        let size : AsteroidSize = size.unwrap_or_else(|| rand::random());
+        let size : AsteroidSize = match size {
+            None => rand::random(),
+            Some(s) => s
+        };
+
         let speed = MAX_SPEED * rng_min(0.25);
         let radius = size.radius();
         let velocity = (Vector2::new(
-                rand::random::<f32>() * WINDOW_D.0,
-                rand::random::<f32>() * WINDOW_D.1) - pos)
+                (rand::random::<f32>() * WINDOW_D.0) - (WINDOW_D.0/2.0),
+                (rand::random::<f32>() * WINDOW_D.1) - (WINDOW_D.1/2.0)) - pos)
             .normalized() * speed;
 
         let n_points = rand::thread_rng().gen_range(8..14);
-        
         let mut points: Vec<Vector2> = Vec::new();
+
         // generate shape
         for i in 0..n_points {
             let magnitude = rng_min(0.5);
             let theta = (PI * 2.0 / n_points as f32) * i as f32;
-            let dir: Vector2 = Vector2::new(theta.cos(), theta.sin());
+            let dir = Vector2::new(theta.cos(), theta.sin());
 
             points.push(dir * (radius * magnitude));
         }
@@ -487,7 +492,7 @@ impl Asteroid {
     }
 
     fn generate_particles(&mut self) {
-        for _ in 1..6 {
+        for _ in 0..6 {
             let theta = rand::random::<f32>() * PI * 2.0;
             let dir = Vector2::new(theta.cos(), theta.sin()).normalized();
             self.particles.push(Particle {
