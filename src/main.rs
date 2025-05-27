@@ -15,9 +15,9 @@ const SPEED: f32 = 0.25 * SCALE;
 const ROT_SPEED: f32 = 0.0018;
 const SHIP_SCALE: f32 = 25.0 * SCALE;
 
-const MAX_PARTICLE_DIST: f32 = 25.0 * SCALE;
+const MAX_PARTICLE_DIST: f32 = 20.0 * SCALE;
 
-const SEGMENT_SPEED: f32 = 15.0 * SCALE;
+const SEGMENT_SPEED: f32 = 20.0 * SCALE;
 const PARTICLE_SPEED: f32 = 35.0 * SCALE;
 const LASER_SPEED: f32 = 250.0 * SCALE;
 
@@ -26,13 +26,6 @@ const PARTICLE_RADIUS: f32 = 1.0 * SCALE;
 
 const LIFE_SIZE: f32 = 25.0 * SCALE;
 const SCORE_SIZE: i32 = 34 * SCALE as i32;
-
-// have particle and laser objects
-// keep track of them seperately from player
-// check for collisions in main loop
-//
-// have asteroid and player object functions:
-//      -   update physics?
 
 struct ShipSegment {
     dir: f32,
@@ -145,8 +138,8 @@ struct State {
 
 // force the stale vector move
 fn clean_vec<T>(v : &mut Vec<T>, mut stale : Vec<usize>) {
-    // sort in descending order, index shifting doesn't matter
-    stale.sort_by(|a, b| b.cmp(a));
+    // descending order => index shifting doesn't matter
+    stale.reverse();
     for i in stale {
         // swap_remove is O(1), doesn't affect future removals because
         // it swaps with the back
@@ -159,7 +152,10 @@ fn to_draw_vector(point : Vector2) -> Vector2 {
 }
 
 fn in_bounds(point : Vector2) -> bool {
-    point.x >= -WINDOW_D.0/2.0 && point.x <= WINDOW_D.0/2.0 && point.y >= -WINDOW_D.1/2.0 && point.y <= WINDOW_D.1/2.0
+    point.x >= -WINDOW_D.0/2.0
+    && point.x <= WINDOW_D.0/2.0
+    && point.y >= -WINDOW_D.1/2.0
+    && point.y <= WINDOW_D.1/2.0
 }
 
 fn rng_min(min : f32) -> f32 {
@@ -190,36 +186,11 @@ fn main() {
         rl_handle: rl,
         audio: audio,
         thread: thread,
-        player: Player {
-            lives: 3,
-            angle_r: 0.0,
-            velocity: Vector2::zero(),
-            pos: Vector2::zero(),
-            exploding: false,
-            explosion_delta: 0.0,
-            points: [Vector2::new(-0.35, -0.5),
-                     Vector2::new(0.0, 0.5),
-                     Vector2::new(0.35, -0.5),
-                     Vector2::new(-0.35, -0.5)],
-            segments: Vec::new(),
-            laser_cooldown: 0.0,
-            lasers: Vec::new(),
-        },
+        player: Player::new(),
         delta: 0.0,
         asteroids: Vec::new(),
         score: 0,
     };
-
-    for i in 0..state.player.points.len() {
-        state.player.segments.push(ShipSegment {
-            speed: 0.0,
-            ds: Vector2::zero(),
-            dir: 0.0,
-            angle: 0.0,
-            p1: state.player.points[i],
-            p2: state.player.points[(i+1)%state.player.points.len()]
-        });
-    }
 
     game_loop(state); // move state into game loop, transfer ownership
 }
@@ -228,16 +199,7 @@ fn game_loop(mut state : State) {
     while !state.rl_handle.window_should_close() {
         state.delta = state.rl_handle.get_frame_time();
 
-        if state.player.lives == 0 {
-            state.score = 0;
-            state.player.lives = 3;
-        }
-
-        state.player.update(state.delta, &state.rl_handle, &state.asteroids);
-
-        // update_player(&mut state);
-        update_asteroids(&mut state);
-
+        update(&mut state);
         render(&mut state);
     }
 }
@@ -273,7 +235,14 @@ fn render(state : &mut State) {
     }
 }
 
-fn update_asteroids(state : &mut State) {
+fn update(state : &mut State) {
+    if state.player.lives == 0 {
+        state.score = 0;
+        state.player.lives = 3;
+    }
+
+    state.player.update(state.delta, &state.rl_handle, &mut state.asteroids);
+
     if state.asteroids.len() < 20 {
         for _ in 0..20-state.asteroids.len() {
             state.asteroids.push(Asteroid::generate(None, None));
@@ -284,7 +253,11 @@ fn update_asteroids(state : &mut State) {
     let mut stale: Vec<usize> = Vec::new();
 
     for (idx, asteroid) in state.asteroids.iter_mut().enumerate() {
-        asteroid.update(&mut state.score, state.delta, &mut state.player.lasers, &mut new);
+        asteroid.update(
+            &mut state.score,
+            state.delta,
+            &mut state.player.lasers,
+            &mut new);
 
         if asteroid.stale {
             stale.push(idx);
@@ -299,6 +272,38 @@ fn update_asteroids(state : &mut State) {
 }
 
 impl Player {
+    fn new() -> Self {
+        let points : [Vector2; 4] = [Vector2::new(-0.35, -0.5),
+                                     Vector2::new(0.0, 0.5),
+                                     Vector2::new(0.35, -0.5),
+                                     Vector2::new(-0.35, -0.5)];
+
+        let mut segments : Vec<ShipSegment> = Vec::new();
+        for i in 0..points.len() {
+            segments.push(ShipSegment {
+                speed: 0.0,
+                ds: Vector2::zero(),
+                dir: 0.0,
+                angle: 0.0,
+                p1: points[i],
+                p2: points[(i+1)%points.len()]
+            });
+        }
+
+        Self {
+            lives: 3,
+            angle_r: 0.0,
+            velocity: Vector2::zero(),
+            pos: Vector2::zero(),
+            exploding: false,
+            explosion_delta: 0.0,
+            points,
+            segments,
+            laser_cooldown: 0.0,
+            lasers: Vec::new(),
+        }
+    }
+
     fn render(&self, handle : &mut RaylibDrawHandle) {
         if self.exploding {
             for segment in &self.segments {
@@ -334,6 +339,7 @@ impl Player {
             segment.speed = SEGMENT_SPEED * rng_min(0.5);
             segment.dir = 2.0 * PI * rand::random::<f32>();
             segment.angle = 2.0 * PI * rand::random::<f32>();
+            segment.ds = Vector2::zero();
         }
     }
 
@@ -354,9 +360,9 @@ impl Player {
 
     fn update_explosion(&mut self, global_delta : f32) {
         self.explosion_delta += global_delta;
-        self.velocity.scale(1.0 - DRAG);
 
         for segment in &mut self.segments {
+            segment.speed *= 1.0 - DRAG;
             segment.ds += Vector2::new(segment.dir.cos(), segment.dir.sin()).normalized()
                 * segment.speed
                 * global_delta;
@@ -506,6 +512,7 @@ impl Asteroid {
 
     fn update_particles(&mut self, global_delta : f32) {
         for particle in &mut self.particles {
+            particle.speed *= 1.0 - DRAG;
             particle.pos += particle.dir * particle.speed * global_delta;
 
             if particle.pos.distance_to(self.pos) > MAX_PARTICLE_DIST {
