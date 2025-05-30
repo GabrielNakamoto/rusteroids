@@ -1,4 +1,8 @@
 use raylib::prelude::*;
+use std::collections::{
+    HashMap,
+    VecDeque
+};
 use rand::{
     distributions::{Distribution, Standard},
     Rng,
@@ -12,14 +16,14 @@ const DRAG: f32 = 1.5 * 1e-4;
 const MAX_SPEED: f32 = 200.0;
 const THICKNESS: f32 = 1.25 * SCALE;
 const SPEED: f32 = 0.25 * SCALE;
-const ROT_SPEED: f32 = 0.0018;
+const ROT_SPEED: f32 = 0.0015;
 const SHIP_SCALE: f32 = 25.0 * SCALE;
 
 const MAX_PARTICLE_DIST: f32 = 20.0 * SCALE;
 
 const SEGMENT_SPEED: f32 = 20.0 * SCALE;
 const PARTICLE_SPEED: f32 = 35.0 * SCALE;
-const LASER_SPEED: f32 = 250.0 * SCALE;
+const LASER_SPEED: f32 = 550.0 * SCALE;
 
 const LASER_RADIUS: f32 = 1.5 * SCALE;
 const PARTICLE_RADIUS: f32 = 1.0 * SCALE;
@@ -108,6 +112,8 @@ impl AsteroidSize {
     }
 }
 
+const SOUND_FILES : [&str; 4] = ["explode.wav", "shoot.wav", "thrust.wav", "asteroid.wav"];
+
 struct Particle {
     pos: Vector2,
     dir: Vector2,
@@ -126,9 +132,10 @@ struct Asteroid {
     stale : bool
 }
 
-struct State {
+struct State<'a> {
     rl_handle: RaylibHandle,
-    audio: Option<RaylibAudio>,
+    audio: Option<&'a RaylibAudio>,
+    sounds : Option<HashMap<String, Sound<'a>>>,
     thread: RaylibThread,
     player: Player,
     delta: f32,
@@ -172,19 +179,29 @@ fn main() {
         .title("Rusteroids")
         .build();
 
-    let mut audio : Option<RaylibAudio> = None;
-    match RaylibAudio::init_audio_device() {
-        Ok(a) => audio = Some(a),
-        Err(e) => println!("Error initializing audio: {}", e),
+    let audio = match RaylibAudio::init_audio_device() {
+        Ok(a) => a,
+        Err(e) => {
+            println!("Error initializing audio: {}", e);
+            return;
+        }
     };
 
-    if audio.is_some() {
-        println!("Got audio device");
+    let mut sounds = HashMap::new();
+    for file in SOUND_FILES {
+        match audio.new_sound(&file) {
+            Ok(s) => {
+                let key = String::from(file.split('.').collect::<Vec<&str>>()[0]);
+                sounds.insert(key, s);
+            }
+            Err(e) => println!("Failed to load {}: {}", file, e),
+        }
     }
 
     let mut state = State {
         rl_handle: rl,
-        audio: audio,
+        audio: Some(&audio),
+        sounds: Some(sounds),
         thread: thread,
         player: Player::new(),
         delta: 0.0,
@@ -192,10 +209,7 @@ fn main() {
         score: 0,
     };
 
-    game_loop(state); // move state into game loop, transfer ownership
-}
 
-fn game_loop(mut state : State) {
     while !state.rl_handle.window_should_close() {
         state.delta = state.rl_handle.get_frame_time();
 
@@ -241,13 +255,14 @@ fn update(state : &mut State) {
         state.player.lives = 3;
     }
 
-    state.player.update(state.delta, &state.rl_handle, &mut state.asteroids);
 
-    if state.asteroids.len() < 20 {
-        for _ in 0..20-state.asteroids.len() {
-            state.asteroids.push(Asteroid::generate(None, None));
-        }
-    }
+    let mut to_play : VecDeque<&str> = VecDeque::new();
+
+    state.player.update(
+        state.delta,
+        &state.rl_handle,
+        &mut state.asteroids,
+        &mut to_play);
 
     let mut new: Vec<Asteroid> = Vec::new();
     let mut stale: Vec<usize> = Vec::new();
@@ -257,7 +272,8 @@ fn update(state : &mut State) {
             &mut state.score,
             state.delta,
             &mut state.player.lasers,
-            &mut new);
+            &mut new,
+            &mut to_play);
 
         if asteroid.stale {
             stale.push(idx);
@@ -268,6 +284,21 @@ fn update(state : &mut State) {
 
     for a in new {
         state.asteroids.push(a);
+    }
+
+    if state.asteroids.len() < 10 {
+        for _ in 0..10-state.asteroids.len() {
+            state.asteroids.push(Asteroid::generate(None, None));
+        }
+    }
+
+    while ! to_play.is_empty() {
+        if let Some(name) = to_play.pop_front() {
+            state.sounds
+                .as_ref()
+                .and_then(|sounds| sounds.get(name))
+                .map(|sound| sound.play());
+        };
     }
 }
 
@@ -380,7 +411,8 @@ impl Player {
     fn update(&mut self,
         global_delta : f32,
         rl_handle : &RaylibHandle,
-        asteroids : &Vec<Asteroid>) {
+        asteroids : &Vec<Asteroid>,
+        to_play : &mut VecDeque<&str>) {
 
         self.update_lasers(global_delta);
 
@@ -417,6 +449,8 @@ impl Player {
                 hit: false
             });
             self.laser_cooldown = 0.2;
+
+            to_play.push_back("shoot");
         }
 
         self.velocity.scale(1.0 - DRAG);
@@ -437,6 +471,8 @@ impl Player {
                 self.explosion_delta = 0.0;
 
                 self.explode();
+
+                to_play.push_back("explode");
                 break;
             }
         }
@@ -446,18 +482,17 @@ impl Player {
 impl Asteroid {
     fn generate(size : Option<AsteroidSize>, pos : Option<Vector2>) -> Self {
         // TODO: fix this crap
-        let pos : Vector2 = match pos {
-            None => {
-                loop {
-                    let x = (rand::random::<f32>() * 2.0 * WINDOW_D.0) - WINDOW_D.0;
-                    let y = (rand::random::<f32>() * 2.0 * WINDOW_D.1) - WINDOW_D.1;
+        let pos = if let Some(p) = pos {
+            p
+        } else {
+            loop {
+                let x = (rand::random::<f32>() * 2.0 * WINDOW_D.0) - WINDOW_D.0;
+                let y = (rand::random::<f32>() * 2.0 * WINDOW_D.1) - WINDOW_D.1;
 
-                    if ! in_bounds(Vector2::new(x, y)) {
-                        break Vector2::new(x, y);
-                    }
+                if ! in_bounds(Vector2::new(x, y)) {
+                    break Vector2::new(x, y);
                 }
-            },
-            Some(vec) => vec
+            }
         };
 
         let size : AsteroidSize = match size {
@@ -522,7 +557,7 @@ impl Asteroid {
         }
     }
 
-    fn update(&mut self, score : &mut i32, global_delta : f32, lasers : &mut Vec<Laser>, new : &mut Vec<Asteroid>) {
+    fn update(&mut self, score : &mut i32, global_delta : f32, lasers : &mut Vec<Laser>, new : &mut Vec<Asteroid>, to_play : &mut VecDeque<&str> ) {
         if self.destroyed {
             return self.update_particles(global_delta)
         }
@@ -543,12 +578,14 @@ impl Asteroid {
             laser.hit = true;
             *score += self.size.score();
 
+            to_play.push_back("asteroid");
+
             if self.size == AsteroidSize::Tiny {
                 self.destroyed = true;
                 self.generate_particles();
             } else {
                 self.stale = true;
-                for _ in 0..rand::thread_rng().gen_range(2..3) {
+                for _ in 0..rand::thread_rng().gen_range(2..=3) {
                     new.push(Asteroid::generate(
                         Some(self.size.split_size()),
                         Some(self.pos)));
