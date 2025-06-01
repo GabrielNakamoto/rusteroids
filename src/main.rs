@@ -21,7 +21,7 @@ const SHIP_SCALE: f32 = 25.0 * SCALE;
 
 const MAX_PARTICLE_DIST: f32 = 20.0 * SCALE;
 
-const SEGMENT_SPEED: f32 = 20.0 * SCALE;
+const SEGMENT_SPEED: f32 = 35.0 * SCALE;
 const PARTICLE_SPEED: f32 = 35.0 * SCALE;
 const LASER_SPEED: f32 = 550.0 * SCALE;
 
@@ -50,9 +50,12 @@ struct Player {
     lives: i32,
     angle_r: f32, // radians
     velocity: Vector2,
+    thrusting: bool,
+    lasers_used : i32,
     pos: Vector2,
     exploding: bool,
     explosion_delta: f32,
+    flames: [Vector2; 3],
     points: [Vector2; 4],
     segments: Vec<ShipSegment>,
     laser_cooldown: f32,
@@ -112,7 +115,7 @@ impl AsteroidSize {
     }
 }
 
-const SOUND_FILES : [&str; 4] = ["explode.wav", "shoot.wav", "thrust.wav", "asteroid.wav"];
+const SOUND_FILES : [&str; 6] = ["explode.wav", "shoot.wav", "thrust.wav", "asteroid.wav", "bloop_hi.wav", "bloop_lo.wav"];
 
 struct Particle {
     pos: Vector2,
@@ -219,11 +222,13 @@ fn main() {
 }
 
 fn render(state : &mut State) {
+    let global_time = state.rl_handle.get_time();
+
     let mut d = state.rl_handle.begin_drawing(&state.thread);
     d.clear_background(Color::BLACK);
 
     // draw ship
-    state.player.render(&mut d);
+    state.player.render(&mut d, global_time);
 
     // draw lasers
     for laser in &state.player.lasers {
@@ -292,6 +297,11 @@ fn update(state : &mut State) {
         }
     }
 
+    let global_time = state.rl_handle.get_time() as f32;
+    state.sounds.as_ref()
+        .and_then(|sounds| sounds.get("thrust"))
+        .map(|s| s.set_volume(f32::max(0.25, (global_time % 0.45) / 0.45)));
+
     while ! to_play.is_empty() {
         if let Some(name) = to_play.pop_front() {
             state.sounds
@@ -308,6 +318,9 @@ impl Player {
                                      Vector2::new(0.0, 0.5),
                                      Vector2::new(0.35, -0.5),
                                      Vector2::new(-0.35, -0.5)];
+        let flames : [Vector2; 3] = [Vector2::new(-0.2, -0.5),
+                                     Vector2::new(0.0, -1.0),
+                                     Vector2::new(0.2, -0.5)];
 
         let mut segments : Vec<ShipSegment> = Vec::new();
         for i in 0..points.len() {
@@ -324,10 +337,13 @@ impl Player {
         Self {
             lives: 3,
             angle_r: 0.0,
+            flames,
             velocity: Vector2::zero(),
             pos: Vector2::zero(),
             exploding: false,
             explosion_delta: 0.0,
+            lasers_used: 0,
+            thrusting: false,
             points,
             segments,
             laser_cooldown: 0.0,
@@ -335,7 +351,7 @@ impl Player {
         }
     }
 
-    fn render(&self, handle : &mut RaylibDrawHandle) {
+    fn render(&self, handle : &mut RaylibDrawHandle, global_time : f64) {
         if self.exploding {
             for segment in &self.segments {
                 let p1 = to_draw_vector(
@@ -349,7 +365,11 @@ impl Player {
             return;
         }
 
-        let transformed : Vec<Vector2> = self.points.iter()
+        let cond = global_time % 0.15 < 0.075 && self.thrusting;
+        let mut iter = self.points.iter()
+            .chain(cond.then_some(self.flames.iter()).into_iter().flatten());
+
+        let transformed : Vec<Vector2> = iter
             .map(|p|
                 to_draw_vector(
                     (p.rotated(self.angle_r) * SHIP_SCALE)
@@ -416,7 +436,7 @@ impl Player {
 
         self.update_lasers(global_delta);
 
-        if self.explosion_delta > 2.0 {
+        if self.explosion_delta > 0.75 {
             self.reset();
         }
 
@@ -438,17 +458,31 @@ impl Player {
         if rl_handle.is_key_down(KeyboardKey::KEY_UP)
             || rl_handle.is_key_down(KeyboardKey::KEY_W) {
             self.velocity += direction * SPEED * global_delta;
+
+            to_play.push_back("thrust");
+
+            self.thrusting = true;
+        } else {
+            self.thrusting = false;
         }
 
         if rl_handle.is_key_down(KeyboardKey::KEY_SPACE)
-            && self.laser_cooldown < 1e-6
-            && self.lasers.len() < 5 {
+            && self.laser_cooldown < 1e-6 {
             self.lasers.push(Laser {
                 dir: direction,
                 pos: self.pos + (direction * 0.5 * SHIP_SCALE),
                 hit: false
             });
-            self.laser_cooldown = 0.2;
+
+            self.lasers_used += 1;
+
+            if self.lasers_used == 8 {
+                // self.laser_cooldown = 1.5;
+                self.laser_cooldown = 0.3;
+                self.lasers_used = 0;
+            } else {
+                self.laser_cooldown = 0.3;
+            }
 
             to_play.push_back("shoot");
         }
@@ -512,7 +546,7 @@ impl Asteroid {
 
         // generate shape
         for i in 0..n_points {
-            let magnitude = rng_min(0.5);
+            let magnitude = rng_min(0.35);
             let theta = (PI * 2.0 / n_points as f32) * i as f32;
             let dir = Vector2::new(theta.cos(), theta.sin());
 
